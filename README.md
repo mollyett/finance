@@ -4,20 +4,43 @@ A comprehensive Streamlit web application for tracking your stock portfolio with
 
 ## Features
 
-- 📊 **Portfolio Tracking**: Track your stock holdings with real-time price updates
+### Core Functionality
+- 📊 **Portfolio Tracking**: Track your stock holdings with real-time price updates via yfinance
+- 💾 **SQLite Database**: Persistent local storage of all transactions and holdings
 - 💵 **Dividend Analysis**: Calculate annual, quarterly, and monthly dividend income
-- 💱 **Multi-Currency Support**: Automatic currency conversion (SEK, USD, EUR)
-- 📈 **Visualizations**: Interactive charts showing portfolio allocation and dividend yields
-- 📤 **CSV Import/Export**: Upload your portfolio data or download a template
-- 🔒 **Data Privacy**: Option to upload your own CSV without storing data on the server
-- 📱 **Responsive Design**: Works on both desktop and mobile devices
+- 💱 **Multi-Currency Support**: Automatic currency conversion (SEK, USD, EUR) using real-time exchange rates
+- 📈 **Advanced Visualizations**: Interactive Plotly charts for comprehensive portfolio analysis
+
+### Transaction Management
+- ➕ **Add Transactions**: Record purchases with date, price, quantity, sector, country, and target allocation
+- 📜 **Transaction History**: View complete history of all transactions
+- 🎯 **Target Allocations**: Set target allocation percentages for rebalancing
+
+### Advanced Metrics
+- **Yield on Cost (YoY)**: Shows dividend yield based on purchase price
+- **Portfolio Yield**: Current dividend yield of entire portfolio
+- **Payout Ratio**: Company's dividend payout ratio (where available)
+- **Gain/Loss Tracking**: Real-time profit/loss calculations with percentages
+
+### Rebalancing
+- ⚖️ **Rebalance Suggestions**: Automated suggestions based on target vs. current allocations
+- **Buy/Sell Recommendations**: Calculated share amounts needed to reach target allocations
+
+### Visualizations
+- **Portfolio Allocation**: Pie charts for value and dividend income distribution
+- **Dividend Yield Charts**: Bar charts showing yield by stock
+- **Snowball Effect**: Projected portfolio growth with dividend reinvestment over 10-30 years
+- **Calendar Year View**: Monthly dividend income heatmap/bar chart
+- **Sector Distribution**: Pie chart showing sector allocation
+- **Geographic Exposure**: Pie chart showing country/region allocation
 
 ## Tech Stack
 
 - **Frontend/Backend**: Streamlit
 - **Data Source**: yfinance (Yahoo Finance API)
 - **Visualization**: Plotly
-- **Storage**: CSV-based (no database required)
+- **Storage**: SQLite database (local, persistent)
+- **Calculations**: Pandas & NumPy
 
 ## Installation
 
@@ -53,32 +76,45 @@ The app will automatically use the `requirements.txt` and `.streamlit/config.tom
 
 ## Usage
 
-### Option 1: Upload CSV File
+### Getting Started
 
-1. Click "Download Template" in the sidebar to get a sample CSV file
-2. Fill in your portfolio data:
-   - **Ticker**: Stock symbol (e.g., AAPL, MSFT)
-   - **Shares**: Number of shares owned
-   - **Avg_Price**: Average purchase price per share
-   - **Currency**: Currency of the stock (SEK, USD, or EUR)
-3. Upload your CSV file using the file uploader
+1. **Add Your First Transaction**:
+   - Navigate to "➕ Add Transaction" in the sidebar
+   - Fill in the required fields:
+     - **Ticker**: Stock symbol (e.g., AAPL, investor-b.st)
+     - **Purchase Date**: Date of purchase
+     - **Purchase Price**: Price per share
+     - **Quantity**: Number of shares
+     - **Currency**: SEK, USD, or EUR
+   - Optional fields:
+     - **Sector**: Industry sector (e.g., Technology, Finance)
+     - **Country**: Country of listing (e.g., USA, Sweden)
+     - **Target Allocation %**: Desired portfolio weight for rebalancing
+   - Click "Add Transaction"
 
-### Option 2: Manual Entry
+2. **View Your Portfolio**:
+   - Go to "📊 Overview" to see your dashboard
+   - View key metrics, holdings table, and visualizations
 
-1. Select "Enter Manually" in the sidebar
-2. Enter the number of stocks you want to add
-3. Fill in the details for each stock
-4. Click "Add to Portfolio"
+3. **Set Target Allocations**:
+   - Navigate to "⚙️ Settings"
+   - Set target allocation percentages for each holding
+   - Return to Overview to see rebalancing suggestions
 
-## CSV Format
+### Navigation
 
-Your CSV file should have the following columns:
+- **📊 Overview**: Main dashboard with metrics, holdings, charts, and transaction history
+- **➕ Add Transaction**: Add new stock purchases to your portfolio
+- **⚙️ Settings**: Configure target allocations and export data
 
-| Ticker | Shares | Avg_Price | Currency |
-|--------|--------|-----------|----------|
-| AAPL   | 10     | 150.00    | USD      |
-| MSFT   | 5      | 300.00    | USD      |
-| VOLV-B | 20     | 200.00    | SEK      |
+## Ticker Format
+
+The app supports tickers from various exchanges:
+- **US Stocks**: AAPL, MSFT, GOOGL
+- **Swedish Stocks**: investor-b.st, volv-b.st (use .ST suffix)
+- **Other Exchanges**: Supports .OL (Oslo), .CO (Copenhagen), etc.
+
+Note: For Stockholm exchange stocks, use the `.ST` suffix (e.g., `investor-b.st`).
 
 ## Features Explained
 
@@ -105,11 +141,22 @@ All portfolio values are converted to your selected base currency for easy compa
 - Python 3.8+
 - See `requirements.txt` for package dependencies
 
+## Database
+
+The app uses a local SQLite database (`.data/portfolio.db`) to store:
+- All transactions with full history
+- Holdings summary (automatically calculated from transactions)
+- Target allocations
+
+The database is created automatically on first run. Data persists between sessions.
+
 ## Notes
 
 - Data is cached for 5 minutes (stocks) and 1 hour (currency rates) to improve performance
 - The app uses yfinance which may have rate limits for free usage
 - Some stocks may not have dividend information available
+- Dividend schedule data (for calendar year view) is estimated based on annual dividends
+- Historical dividend data for CAGR calculations would require additional data sources
 
 ## License
 

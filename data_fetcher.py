@@ -9,6 +9,43 @@ import streamlit as st
 from datetime import datetime, timedelta
 
 
+def normalize_ticker(ticker):
+    """
+    Normalize ticker symbol for yfinance.
+    Handles different exchange suffixes like .ST (Stockholm), .OL (Oslo), etc.
+    
+    Args:
+        ticker: Ticker symbol (e.g., 'investor-b.st', 'AAPL')
+        
+    Returns:
+        Normalized ticker for yfinance
+    """
+    ticker = ticker.upper().strip()
+    
+    # Handle Stockholm exchange (.ST)
+    if ticker.endswith('.ST'):
+        # yfinance uses .ST suffix as-is
+        return ticker
+    elif ticker.endswith('.STO'):
+        return ticker.replace('.STO', '.ST')
+    
+    # Handle other common exchanges
+    # Oslo (.OL)
+    if ticker.endswith('.OL'):
+        return ticker
+    
+    # Copenhagen (.CO)
+    if ticker.endswith('.CO'):
+        return ticker
+    
+    # For US stocks, ensure no suffix issues
+    if '.' in ticker and not any(ticker.endswith(suffix) for suffix in ['.ST', '.OL', '.CO', '.DE', '.L']):
+        # Might be a ticker with dot, try as-is first
+        pass
+    
+    return ticker
+
+
 @st.cache_data(ttl=300)  # Cache for 5 minutes
 def fetch_stock_data(portfolio_df):
     """
@@ -28,7 +65,9 @@ def fetch_stock_data(portfolio_df):
     
     for ticker in tickers:
         try:
-            stock = yf.Ticker(ticker)
+            # Normalize ticker for yfinance (handle .ST, .OL, etc.)
+            normalized_ticker = normalize_ticker(ticker)
+            stock = yf.Ticker(normalized_ticker)
             info = stock.info
             
             # Get current price
@@ -52,6 +91,9 @@ def fetch_stock_data(portfolio_df):
             # Get market cap
             market_cap = info.get('marketCap', 0) or 0
             
+            # Get payout ratio
+            payout_ratio = info.get('payoutRatio', 0) or 0
+            
             stock_data.append({
                 'Ticker': ticker,
                 'Company_Name': company_name,
@@ -61,6 +103,7 @@ def fetch_stock_data(portfolio_df):
                 'Week_52_High': week_52_high,
                 'Week_52_Low': week_52_low,
                 'Market_Cap': market_cap,
+                'Payout_Ratio': payout_ratio,
                 'Currency': info.get('currency', 'USD')
             })
             

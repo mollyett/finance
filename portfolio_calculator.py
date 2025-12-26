@@ -4,6 +4,7 @@ Handles portfolio calculations including gains, losses, and dividend metrics.
 """
 
 import pandas as pd
+from datetime import datetime
 from data_fetcher import get_currency_rate
 
 
@@ -385,4 +386,177 @@ def calculate_advanced_statistics(portfolio_data, user_data, base_currency, curr
         }
     
     return stats
+
+
+def calculate_yield_on_cost(portfolio_data, user_data, base_currency, currency_rates):
+    """
+    Calculate Yield on Cost (YoY) for each holding.
+    YoY = Annual Dividend per Share / Average Purchase Price
+    
+    Args:
+        portfolio_data: DataFrame with stock data
+        user_data: DataFrame with user's portfolio
+        base_currency: Base currency
+        currency_rates: Currency exchange rates
+        
+    Returns:
+        Dictionary with YoY for each ticker
+    """
+    yoc_data = {}
+    
+    for idx, user_row in user_data.iterrows():
+        ticker = user_row['Ticker']
+        avg_price = user_row['Avg_Price']
+        stock_currency = user_row['Currency']
+        
+        stock_data = portfolio_data[portfolio_data['Ticker'] == ticker]
+        if stock_data.empty:
+            continue
+        
+        stock_row = stock_data.iloc[0]
+        annual_dividend = stock_row.get('Annual_Dividend', 0) or 0
+        
+        if pd.notna(annual_dividend) and annual_dividend > 0 and avg_price > 0:
+            rate = get_currency_rate(stock_currency, base_currency, currency_rates)
+            dividend_base = annual_dividend * rate
+            price_base = avg_price * rate
+            
+            if price_base > 0:
+                yoc = (dividend_base / price_base) * 100
+                yoc_data[ticker] = yoc
+    
+    return yoc_data
+
+
+def calculate_dividend_cagr(transactions_df, portfolio_data, base_currency, currency_rates):
+    """
+    Calculate Compound Annual Growth Rate (CAGR) for dividends.
+    Requires transaction history with dates.
+    
+    Args:
+        transactions_df: DataFrame with transaction history
+        portfolio_data: DataFrame with current stock data
+        base_currency: Base currency
+        currency_rates: Currency exchange rates
+        
+    Returns:
+        Dictionary with CAGR for each ticker (if enough data available)
+    """
+    cagr_data = {}
+    
+    # Group transactions by ticker
+    for ticker in transactions_df['ticker'].unique():
+        ticker_transactions = transactions_df[transactions_df['ticker'] == ticker].sort_values('purchase_date')
+        
+        if len(ticker_transactions) < 2:
+            continue  # Need at least 2 transactions to calculate growth
+        
+        # Get current dividend
+        stock_data = portfolio_data[portfolio_data['Ticker'] == ticker]
+        if stock_data.empty:
+            continue
+        
+        current_dividend = stock_data.iloc[0].get('Annual_Dividend', 0) or 0
+        if not pd.notna(current_dividend) or current_dividend <= 0:
+            continue
+        
+        # Get first transaction date and estimate initial dividend (simplified)
+        first_date = pd.to_datetime(ticker_transactions.iloc[0]['purchase_date'])
+        years = (datetime.now() - first_date).days / 365.25
+        
+        if years < 1:
+            continue  # Need at least 1 year of history
+        
+        # Simplified CAGR calculation (assuming dividend growth)
+        # In reality, you'd need historical dividend data
+        # This is a placeholder that would need historical data
+        cagr_data[ticker] = {
+            'cagr': None,  # Would need historical dividend data
+            'years': years,
+            'current_dividend': current_dividend
+        }
+    
+    return cagr_data
+
+
+def calculate_rebalance_suggestions(portfolio_data, user_data, base_currency, currency_rates):
+    """
+    Calculate rebalancing suggestions based on target allocations.
+    
+    Args:
+        portfolio_data: DataFrame with stock data
+        user_data: DataFrame with user's portfolio (must have Target_Allocation column)
+        base_currency: Base currency
+        currency_rates: Currency exchange rates
+        
+    Returns:
+        DataFrame with rebalancing suggestions
+    """
+    suggestions = []
+    total_portfolio_value = 0
+    
+    # Calculate current values and total portfolio value
+    holding_values = {}
+    for idx, user_row in user_data.iterrows():
+        ticker = user_row['Ticker']
+        shares = user_row['Shares']
+        stock_currency = user_row['Currency']
+        target_alloc = user_row.get('Target_Allocation', None)
+        
+        stock_data = portfolio_data[portfolio_data['Ticker'] == ticker]
+        if stock_data.empty:
+            continue
+        
+        stock_row = stock_data.iloc[0]
+        current_price = stock_row.get('Current_Price', 0)
+        rate = get_currency_rate(stock_currency, base_currency, currency_rates)
+        current_price_base = current_price * rate
+        market_value = shares * current_price_base
+        
+        total_portfolio_value += market_value
+        holding_values[ticker] = {
+            'current_value': market_value,
+            'shares': shares,
+            'current_price': current_price_base,
+            'target_alloc': target_alloc
+        }
+    
+    # Calculate suggestions
+    for ticker, data in holding_values.items():
+        current_value = data['current_value']
+        current_weight = (current_value / total_portfolio_value * 100) if total_portfolio_value > 0 else 0
+        target_weight = data['target_alloc'] if pd.notna(data['target_alloc']) else None
+        current_price = data['current_price']
+        
+        if target_weight is not None and current_price > 0:
+            target_value = total_portfolio_value * (target_weight / 100)
+            difference = target_value - current_value
+            shares_to_buy = difference / current_price if difference > 0 else 0
+            shares_to_sell = abs(difference) / current_price if difference < 0 else 0
+            
+            suggestions.append({
+                'Ticker': ticker,
+                'Current_Weight_%': round(current_weight, 2),
+                'Target_Weight_%': round(target_weight, 2),
+                'Difference_%': round(target_weight - current_weight, 2),
+                'Current_Value': current_value,
+                'Target_Value': target_value,
+                'Value_Difference': difference,
+                'Shares_to_Buy': round(shares_to_buy, 2) if shares_to_buy > 0 else 0,
+                'Shares_to_Sell': round(shares_to_sell, 2) if shares_to_sell > 0 else 0
+            })
+        else:
+            suggestions.append({
+                'Ticker': ticker,
+                'Current_Weight_%': round(current_weight, 2),
+                'Target_Weight_%': target_weight if target_weight else 'N/A',
+                'Difference_%': 'N/A',
+                'Current_Value': current_value,
+                'Target_Value': 'N/A',
+                'Value_Difference': 'N/A',
+                'Shares_to_Buy': 'N/A',
+                'Shares_to_Sell': 'N/A'
+            })
+    
+    return pd.DataFrame(suggestions)
 

@@ -243,7 +243,7 @@ def display_portfolio_table_enhanced(portfolio_data, portfolio_df, base_currency
     
     # Calculate dividend metrics
     display_df['Annual_Dividend_Base'] = display_df.apply(
-        lambda row: row.get('Annual_Dividend', 0) * currency_rates.get(f"{row['Currency']}/{base_currency}", 1.0) if pd.notna(row.get('Annual_Dividend')) else 0,
+        lambda row: row.get('Annual_Dividend', 0) * currency_rates.get(f"{row.get('Currency', 'USD')}/{base_currency}", 1.0) if pd.notna(row.get('Annual_Dividend')) else 0,
         axis=1
     )
     display_df['Dividend_Yield'] = (display_df['Annual_Dividend_Base'] / display_df['Current_Price_Base'] * 100).round(2)
@@ -316,9 +316,18 @@ def display_all_visualizations(portfolio_data, portfolio_df, base_currency, curr
         
         # Prepare data
         chart_df = portfolio_df.merge(portfolio_data, left_on='Ticker', right_on='Ticker', how='left')
+        
+        # Ensure required columns exist with defaults
+        if 'Currency' not in chart_df.columns:
+            chart_df['Currency'] = 'USD'  # Default currency
+        if 'Shares' not in chart_df.columns:
+            chart_df['Shares'] = 0
+        if 'Current_Price' not in chart_df.columns:
+            chart_df['Current_Price'] = 0
+        
         chart_df['Market_Value'] = chart_df.apply(
-            lambda row: row['Shares'] * row.get('Current_Price', 0) * 
-            currency_rates.get(f"{row['Currency']}/{base_currency}", 1.0),
+            lambda row: row.get('Shares', 0) * row.get('Current_Price', 0) * 
+            currency_rates.get(f"{row.get('Currency', 'USD')}/{base_currency}", 1.0),
             axis=1
         )
         
@@ -343,8 +352,8 @@ def display_all_visualizations(portfolio_data, portfolio_df, base_currency, curr
             with col2:
                 # Dividend income allocation
                 chart_df['Dividend_Income'] = chart_df.apply(
-                    lambda row: row['Shares'] * row.get('Annual_Dividend', 0) * 
-                    currency_rates.get(f"{row['Currency']}/{base_currency}", 1.0) if pd.notna(row.get('Annual_Dividend')) else 0,
+                    lambda row: row.get('Shares', 0) * row.get('Annual_Dividend', 0) * 
+                    currency_rates.get(f"{row.get('Currency', 'USD')}/{base_currency}", 1.0) if pd.notna(row.get('Annual_Dividend')) else 0,
                     axis=1
                 )
                 fig_pie2 = px.pie(
@@ -362,7 +371,7 @@ def display_all_visualizations(portfolio_data, portfolio_df, base_currency, curr
                 lambda row: calculate_dividend_yield(
                     row.get('Annual_Dividend', 0),
                     row.get('Current_Price', 0),
-                    row['Currency'],
+                    row.get('Currency', 'USD'),
                     base_currency,
                     currency_rates
                 ) if pd.notna(row.get('Annual_Dividend')) else 0,

@@ -174,12 +174,16 @@ def get_holdings_as_portfolio_df():
     result_df = holdings_df[available_columns].copy()
     
     # Fill NaN values with appropriate defaults
+    # Convert to object type first to allow None values
     if 'Sector' in result_df.columns:
-        result_df['Sector'] = result_df['Sector'].fillna(None)
+        result_df['Sector'] = result_df['Sector'].astype('object')
+        result_df.loc[result_df['Sector'].isna(), 'Sector'] = None
     if 'Country' in result_df.columns:
-        result_df['Country'] = result_df['Country'].fillna(None)
+        result_df['Country'] = result_df['Country'].astype('object')
+        result_df.loc[result_df['Country'].isna(), 'Country'] = None
     if 'Target_Allocation' in result_df.columns:
-        result_df['Target_Allocation'] = result_df['Target_Allocation'].fillna(None)
+        result_df['Target_Allocation'] = result_df['Target_Allocation'].astype('object')
+        result_df.loc[result_df['Target_Allocation'].isna(), 'Target_Allocation'] = None
     
     return result_df
 

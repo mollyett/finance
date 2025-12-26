@@ -211,13 +211,29 @@ def display_portfolio_table_enhanced(portfolio_data, portfolio_df, base_currency
     # Merge data
     display_df = portfolio_df.merge(portfolio_data, left_on='Ticker', right_on='Ticker', how='left')
     
-    # Calculate values
+    # Ensure required columns exist with defaults
+    if 'Sector' not in display_df.columns:
+        display_df['Sector'] = None
+    if 'Country' not in display_df.columns:
+        display_df['Country'] = None
+    if 'Target_Allocation' not in display_df.columns:
+        display_df['Target_Allocation'] = None
+    if 'Currency' not in display_df.columns:
+        display_df['Currency'] = 'USD'  # Default currency
+    if 'Shares' not in display_df.columns:
+        display_df['Shares'] = 0
+    if 'Avg_Price' not in display_df.columns:
+        display_df['Avg_Price'] = 0
+    if 'Current_Price' not in display_df.columns:
+        display_df['Current_Price'] = 0
+    
+    # Calculate values with safe access
     display_df['Current_Price_Base'] = display_df.apply(
-        lambda row: row['Current_Price'] * currency_rates.get(f"{row['Currency']}/{base_currency}", 1.0),
+        lambda row: row.get('Current_Price', 0) * currency_rates.get(f"{row.get('Currency', 'USD')}/{base_currency}", 1.0),
         axis=1
     )
     display_df['Avg_Price_Base'] = display_df.apply(
-        lambda row: row['Avg_Price'] * currency_rates.get(f"{row['Currency']}/{base_currency}", 1.0),
+        lambda row: row.get('Avg_Price', 0) * currency_rates.get(f"{row.get('Currency', 'USD')}/{base_currency}", 1.0),
         axis=1
     )
     display_df['Market_Value'] = display_df['Shares'] * display_df['Current_Price_Base']
@@ -250,8 +266,8 @@ def display_portfolio_table_enhanced(portfolio_data, portfolio_df, base_currency
     
     formatted_df = pd.DataFrame()
     formatted_df['Ticker'] = display_df['Ticker']
-    formatted_df['Sector'] = display_df.get('Sector', 'N/A')
-    formatted_df['Country'] = display_df.get('Country', 'N/A')
+    formatted_df['Sector'] = display_df['Sector'].fillna('N/A') if 'Sector' in display_df.columns else 'N/A'
+    formatted_df['Country'] = display_df['Country'].fillna('N/A') if 'Country' in display_df.columns else 'N/A'
     formatted_df['Shares'] = display_df['Shares'].apply(lambda x: f"{x:,.2f}")
     formatted_df[f'Current Price ({base_currency})'] = display_df['Current_Price_Base'].apply(lambda x: f"{x:,.2f}")
     formatted_df[f'Avg Price ({base_currency})'] = display_df['Avg_Price_Base'].apply(lambda x: f"{x:,.2f}")

@@ -144,14 +144,44 @@ def get_holdings_as_portfolio_df():
     if holdings_df.empty:
         return pd.DataFrame(columns=['Ticker', 'Shares', 'Avg_Price', 'Currency', 'Sector', 'Country', 'Target_Allocation'])
     
-    # Rename columns to match expected format
-    holdings_df = holdings_df.rename(columns={
-        'total_shares': 'Shares',
-        'avg_price': 'Avg_Price',
-        'target_allocation': 'Target_Allocation'
-    })
+    # Rename columns to match expected format (handle both lowercase and mixed case)
+    column_mapping = {}
+    if 'ticker' in holdings_df.columns:
+        column_mapping['ticker'] = 'Ticker'
+    if 'total_shares' in holdings_df.columns:
+        column_mapping['total_shares'] = 'Shares'
+    if 'avg_price' in holdings_df.columns:
+        column_mapping['avg_price'] = 'Avg_Price'
+    if 'currency' in holdings_df.columns:
+        column_mapping['currency'] = 'Currency'
+    if 'sector' in holdings_df.columns:
+        column_mapping['sector'] = 'Sector'
+    if 'country' in holdings_df.columns:
+        column_mapping['country'] = 'Country'
+    if 'target_allocation' in holdings_df.columns:
+        column_mapping['target_allocation'] = 'Target_Allocation'
     
-    return holdings_df[['Ticker', 'Shares', 'Avg_Price', 'Currency', 'Sector', 'Country', 'Target_Allocation']]
+    holdings_df = holdings_df.rename(columns=column_mapping)
+    
+    # Ensure all required columns exist, fill missing ones with None
+    required_columns = ['Ticker', 'Shares', 'Avg_Price', 'Currency', 'Sector', 'Country', 'Target_Allocation']
+    for col in required_columns:
+        if col not in holdings_df.columns:
+            holdings_df[col] = None
+    
+    # Select only the columns that exist and are required
+    available_columns = [col for col in required_columns if col in holdings_df.columns]
+    result_df = holdings_df[available_columns].copy()
+    
+    # Fill NaN values with appropriate defaults
+    if 'Sector' in result_df.columns:
+        result_df['Sector'] = result_df['Sector'].fillna(None)
+    if 'Country' in result_df.columns:
+        result_df['Country'] = result_df['Country'].fillna(None)
+    if 'Target_Allocation' in result_df.columns:
+        result_df['Target_Allocation'] = result_df['Target_Allocation'].fillna(None)
+    
+    return result_df
 
 
 def delete_transaction(transaction_id):
@@ -220,4 +250,5 @@ def clear_all_data():
     
     conn.commit()
     conn.close()
+
 

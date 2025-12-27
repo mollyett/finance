@@ -24,8 +24,17 @@ from database import (
     get_all_holdings,
     get_holdings_as_portfolio_df,
     delete_transaction,
+    delete_holding,
     update_holding_target_allocation,
-    clear_all_data
+    update_holding_price_data,
+    get_manual_price_data,
+    clear_all_data,
+    add_dividend,
+    get_dividends_for_ticker,
+    get_all_dividends,
+    delete_dividend,
+    delete_all_dividends_for_ticker,
+    calculate_annual_dividend_from_dividends
 )
 from utils import create_template_csv
 
@@ -64,7 +73,7 @@ def main():
         
         page = st.radio(
             "Navigation",
-            ["📊 Overview", "➕ Add Transaction", "⚙️ Settings"],
+            ["📊 Overview", "➕ Add Transaction", "✏️ Edit Prices", "⚙️ Settings"],
             label_visibility="collapsed"
         )
         
@@ -103,6 +112,8 @@ def main():
         show_overview_page(base_currency)
     elif page == "➕ Add Transaction":
         show_add_transaction_page()
+    elif page == "✏️ Edit Prices":
+        show_edit_prices_page()
     elif page == "⚙️ Settings":
         show_settings_page()
 
@@ -126,11 +137,28 @@ def show_overview_page(base_currency):
     
     # Fetch stock data
     with st.spinner("Fetching stock data... This may take a moment."):
-        portfolio_data = fetch_stock_data(portfolio_df)
+        portfolio_data = fetch_stock_data(portfolio_df, use_manual_prices=True)
     
     if portfolio_data is None or portfolio_data.empty:
         st.error("❌ Failed to fetch stock data. Please check your ticker symbols.")
         return
+    
+    # Check if prices were fetched successfully
+    missing_prices = portfolio_data[portfolio_data['Current_Price'] == 0]['Ticker'].tolist()
+    manual_prices_used = portfolio_data[portfolio_data.get('Price_Source', '') == 'manual']['Ticker'].tolist()
+    
+    if manual_prices_used:
+        st.success(f"✅ Använder manuellt angivna priser för: {', '.join(manual_prices_used)}")
+    
+    if missing_prices:
+        with st.expander("🔍 Debug: Aktiekurser", expanded=False):
+            st.write("**Kurser som saknas:**")
+            for ticker in missing_prices:
+                ticker_data = portfolio_data[portfolio_data['Ticker'] == ticker].iloc[0]
+                st.write(f"- **{ticker}**: Current_Price = {ticker_data.get('Current_Price', 'N/A')}, "
+                        f"Price_Source = {ticker_data.get('Price_Source', 'N/A')}")
+            st.warning(f"⚠️ Aktiekurser kunde inte hämtas för: {', '.join(missing_prices)}. "
+                      f"Gå till '✏️ Edit Prices' för att ange priser manuellt.")
     
     # Calculate metrics
     metrics = calculate_portfolio_metrics(
@@ -209,7 +237,33 @@ def display_portfolio_table_enhanced(portfolio_data, portfolio_df, base_currency
     st.subheader("📋 Portfolio Holdings")
     
     # Merge data
-    display_df = portfolio_df.merge(portfolio_data, left_on='Ticker', right_on='Ticker', how='left')
+    # Use suffixes to avoid column name conflicts
+    # portfolio_df has user's Currency, portfolio_data has yfinance Currency
+    display_df = portfolio_df.merge(portfolio_data, left_on='Ticker', right_on='Ticker', how='left', suffixes=('', '_yf'))
+    
+    # Debug: Check if Current_Price was fetched
+    if 'Current_Price' in display_df.columns:
+        zero_prices = display_df[display_df['Current_Price'] == 0]['Ticker'].tolist()
+        if zero_prices:
+            st.warning(f"⚠️ Aktiekurser saknas för: {', '.join(zero_prices)}")
+        
+        # Debug: Show dividend yield calculation details
+        with st.expander("🔍 Debug: Dividend Yield Beräkning"):
+            debug_cols = ['Ticker', 'Current_Price_Base', 'Annual_Dividend_Base', 'Dividend_Yield', 'Shares']
+            if all(col in display_df.columns for col in debug_cols):
+                debug_df = display_df[debug_cols].copy()
+                debug_df['Total_Dividend'] = debug_df['Shares'] * debug_df['Annual_Dividend_Base']
+                debug_df['Formula'] = debug_df.apply(
+                    lambda row: f"({row['Annual_Dividend_Base']:.2f} / {row['Current_Price_Base']:.2f}) × 100" 
+                    if row['Current_Price_Base'] > 0 else "N/A (pris = 0)",
+                    axis=1
+                )
+                st.dataframe(debug_df, use_container_width=True)
+                st.caption("💡 **Förklaring**: Dividend Yield = (Årlig Utdelning per Aktie / Aktuellt Pris) × 100")
+                st.caption("⚠️ **Viktigt**: 'Annual_Dividend_Base' ska vara per aktie, inte total utdelning!")
+    
+    # Keep both currencies: Currency (user's) and Currency_yf (yfinance's)
+    # We need Currency_yf to convert Current_Price correctly
     
     # Ensure required columns exist with defaults
     if 'Sector' not in display_df.columns:
@@ -219,7 +273,7 @@ def display_portfolio_table_enhanced(portfolio_data, portfolio_df, base_currency
     if 'Target_Allocation' not in display_df.columns:
         display_df['Target_Allocation'] = None
     if 'Currency' not in display_df.columns:
-        display_df['Currency'] = 'USD'  # Default currency
+        display_df['Currency'] = 'USD'  # Default currency (shouldn't happen if data is correct)
     if 'Shares' not in display_df.columns:
         display_df['Shares'] = 0
     if 'Avg_Price' not in display_df.columns:
@@ -227,27 +281,76 @@ def display_portfolio_table_enhanced(portfolio_data, portfolio_df, base_currency
     if 'Current_Price' not in display_df.columns:
         display_df['Current_Price'] = 0
     
+    # CRITICAL: Ensure we use Currency from portfolio_df (user's input), not from yfinance
+    # After merge, Currency should come from portfolio_df, but let's be explicit
+    if 'Currency' in portfolio_df.columns:
+        # Map Currency from original portfolio_df to ensure correct values
+        currency_map = dict(zip(portfolio_df['Ticker'], portfolio_df['Currency']))
+        display_df['Currency'] = display_df['Ticker'].map(currency_map).fillna(display_df.get('Currency', 'USD'))
+    
     # Calculate values with safe access
+    # IMPORTANT: Current_Price from yfinance is in yfinance's currency (Currency_yf)
+    # Avg_Price from user is in user's currency (Currency)
+    
+    # Get yfinance currency (fallback to user's currency if not available)
+    if 'Currency_yf' in display_df.columns:
+        display_df['YF_Currency'] = display_df['Currency_yf'].fillna(display_df.get('Currency', 'USD'))
+    else:
+        # If no yfinance currency, assume it's the same as user's currency
+        display_df['YF_Currency'] = display_df.get('Currency', 'USD')
+    
+    # Convert Current_Price from yfinance currency to base currency
+    # If yfinance currency differs from user's currency, convert through user's currency first
     display_df['Current_Price_Base'] = display_df.apply(
-        lambda row: row.get('Current_Price', 0) * currency_rates.get(f"{row.get('Currency', 'USD')}/{base_currency}", 1.0),
+        lambda row: (
+            float(row.get('Current_Price', 0)) * 
+            float(currency_rates.get(f"{row.get('YF_Currency', 'USD')}/{base_currency}", 1.0))
+            if pd.notna(row.get('Current_Price')) and float(row.get('Current_Price', 0)) > 0
+            else 0.0
+        ),
         axis=1
     )
+    
+    # Avg_Price is already in user's currency, convert to base currency
     display_df['Avg_Price_Base'] = display_df.apply(
         lambda row: row.get('Avg_Price', 0) * currency_rates.get(f"{row.get('Currency', 'USD')}/{base_currency}", 1.0),
         axis=1
     )
+    
     display_df['Market_Value'] = display_df['Shares'] * display_df['Current_Price_Base']
     display_df['Cost_Basis'] = display_df['Shares'] * display_df['Avg_Price_Base']
     display_df['Gain_Loss'] = display_df['Market_Value'] - display_df['Cost_Basis']
-    display_df['Gain_Loss_Pct'] = (display_df['Gain_Loss'] / display_df['Cost_Basis'] * 100).round(2)
+    
+    # Calculate percentage, handle division by zero
+    display_df['Gain_Loss_Pct'] = display_df.apply(
+        lambda row: round((row['Gain_Loss'] / row['Cost_Basis'] * 100), 2) if row['Cost_Basis'] > 0 else 0.0,
+        axis=1
+    )
     
     # Calculate dividend metrics
     display_df['Annual_Dividend_Base'] = display_df.apply(
         lambda row: row.get('Annual_Dividend', 0) * currency_rates.get(f"{row.get('Currency', 'USD')}/{base_currency}", 1.0) if pd.notna(row.get('Annual_Dividend')) else 0,
         axis=1
     )
-    display_df['Dividend_Yield'] = (display_df['Annual_Dividend_Base'] / display_df['Current_Price_Base'] * 100).round(2)
-    display_df['Yield_on_Cost'] = (display_df['Annual_Dividend_Base'] / display_df['Avg_Price_Base'] * 100).round(2)
+    
+    # Calculate Dividend Yield, handle division by zero and NaN
+    # Dividend Yield = (Annual Dividend per Share / Current Price) × 100
+    # Note: Annual_Dividend should be per share, not total
+    display_df['Dividend_Yield'] = display_df.apply(
+        lambda row: round((row['Annual_Dividend_Base'] / row['Current_Price_Base'] * 100), 2) 
+        if pd.notna(row['Current_Price_Base']) and row['Current_Price_Base'] > 0 and pd.notna(row['Annual_Dividend_Base']) and row['Annual_Dividend_Base'] > 0
+        else 0.0,
+        axis=1
+    )
+    
+    # Calculate Yield on Cost, handle division by zero and NaN
+    display_df['Yield_on_Cost'] = display_df.apply(
+        lambda row: round((row['Annual_Dividend_Base'] / row['Avg_Price_Base'] * 100), 2) 
+        if pd.notna(row['Avg_Price_Base']) and row['Avg_Price_Base'] > 0 and pd.notna(row['Annual_Dividend_Base']) 
+        else 0.0,
+        axis=1
+    )
+    
     display_df['Dividend_Income'] = display_df['Shares'] * display_df['Annual_Dividend_Base']
     
     # Payout ratio
@@ -269,18 +372,59 @@ def display_portfolio_table_enhanced(portfolio_data, portfolio_df, base_currency
     formatted_df['Sector'] = display_df['Sector'].fillna('N/A') if 'Sector' in display_df.columns else 'N/A'
     formatted_df['Country'] = display_df['Country'].fillna('N/A') if 'Country' in display_df.columns else 'N/A'
     formatted_df['Shares'] = display_df['Shares'].apply(lambda x: f"{x:,.2f}")
-    formatted_df[f'Current Price ({base_currency})'] = display_df['Current_Price_Base'].apply(lambda x: f"{x:,.2f}")
+    formatted_df[f'Current Price ({base_currency})'] = display_df['Current_Price_Base'].apply(
+        lambda x: f"{float(x):,.2f}" if pd.notna(x) and float(x) > 0 else "N/A"
+    )
     formatted_df[f'Avg Price ({base_currency})'] = display_df['Avg_Price_Base'].apply(lambda x: f"{x:,.2f}")
-    formatted_df['Market Value'] = display_df['Market_Value'].apply(lambda x: f"{x:,.2f}")
+    formatted_df['Market Value'] = display_df['Market_Value'].apply(
+        lambda x: f"{x:,.2f}" if pd.notna(x) and x != 0 else "N/A"
+    )
     formatted_df['Cost Basis'] = display_df['Cost_Basis'].apply(lambda x: f"{x:,.2f}")
     formatted_df['Gain/Loss'] = display_df['Gain_Loss'].apply(lambda x: f"{x:,.2f}")
     formatted_df['Gain/Loss %'] = display_df['Gain_Loss_Pct'].apply(lambda x: f"{x:,.2f}%")
-    formatted_df['Dividend Yield %'] = display_df['Dividend_Yield'].apply(lambda x: f"{x:.2f}%")
-    formatted_df['Yield on Cost %'] = display_df['Yield_on_Cost'].apply(lambda x: f"{x:.2f}%")
+    formatted_df['Dividend Yield %'] = display_df['Dividend_Yield'].apply(
+        lambda x: f"{x:.2f}%" if pd.notna(x) and x != 0 else "N/A"
+    )
+    formatted_df['Yield on Cost %'] = display_df['Yield_on_Cost'].apply(
+        lambda x: f"{x:.2f}%" if pd.notna(x) and x != 0 else "N/A"
+    )
     formatted_df['Payout Ratio %'] = display_df['Payout_Ratio'].apply(lambda x: f"{x:.2f}%" if x > 0 else "N/A")
     formatted_df['Annual Dividend Income'] = display_df['Dividend_Income'].apply(lambda x: f"{x:,.2f}")
     
     st.dataframe(formatted_df, use_container_width=True, hide_index=True)
+    
+    # Add section to delete individual holdings
+    st.markdown("---")
+    with st.expander("🗑️ Ta bort innehav", expanded=False):
+        st.markdown("**Varning:** Detta tar bort alla transaktioner för det valda innehavet.")
+        
+        if not portfolio_df.empty:
+            ticker_list = portfolio_df['Ticker'].tolist()
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_ticker = st.selectbox(
+                    "Välj innehav att ta bort",
+                    ticker_list,
+                    key="delete_holding_select",
+                    label_visibility="collapsed"
+                )
+            
+            with col2:
+                if st.button("🗑️ Ta bort", use_container_width=True, type="secondary", key="delete_holding_button"):
+                    if st.session_state.get(f'confirm_delete_{selected_ticker}', False):
+                        try:
+                            delete_holding(selected_ticker)
+                            st.success(f"✅ {selected_ticker} har tagits bort!")
+                            st.session_state[f'confirm_delete_{selected_ticker}'] = False
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Fel vid borttagning: {str(e)}")
+                    else:
+                        st.session_state[f'confirm_delete_{selected_ticker}'] = True
+                        st.warning(f"Klicka igen för att bekräfta borttagning av {selected_ticker}")
+        else:
+            st.info("Inga innehav att ta bort.")
 
 
 def display_rebalance_suggestions(portfolio_data, portfolio_df, base_currency, currency_rates):
@@ -315,7 +459,12 @@ def display_all_visualizations(portfolio_data, portfolio_df, base_currency, curr
         from plotly.subplots import make_subplots
         
         # Prepare data
-        chart_df = portfolio_df.merge(portfolio_data, left_on='Ticker', right_on='Ticker', how='left')
+        # Use suffixes to avoid conflicts, prioritize user's currency
+        chart_df = portfolio_df.merge(portfolio_data, left_on='Ticker', right_on='Ticker', how='left', suffixes=('', '_yf'))
+        
+        # If Currency was duplicated, use the one from portfolio_df (user's input)
+        if 'Currency_yf' in chart_df.columns:
+            chart_df = chart_df.drop(columns=['Currency_yf'])
         
         # Ensure required columns exist with defaults
         if 'Currency' not in chart_df.columns:
@@ -324,6 +473,11 @@ def display_all_visualizations(portfolio_data, portfolio_df, base_currency, curr
             chart_df['Shares'] = 0
         if 'Current_Price' not in chart_df.columns:
             chart_df['Current_Price'] = 0
+        
+        # CRITICAL: Ensure we use Currency from portfolio_df (user's input), not from yfinance
+        if 'Currency' in portfolio_df.columns:
+            currency_map = dict(zip(portfolio_df['Ticker'], portfolio_df['Currency']))
+            chart_df['Currency'] = chart_df['Ticker'].map(currency_map).fillna(chart_df.get('Currency', 'USD'))
         
         chart_df['Market_Value'] = chart_df.apply(
             lambda row: row.get('Shares', 0) * row.get('Current_Price', 0) * 
@@ -446,40 +600,77 @@ def display_all_visualizations(portfolio_data, portfolio_df, base_currency, curr
                 st.plotly_chart(fig, use_container_width=True)
         
         with tab4:
-            # Calendar year view (simplified - would need actual dividend schedule)
+            # Calendar year view using actual dividend dates
             st.markdown("**Kalenderår: Utdelningar per månad**")
-            st.info("This visualization requires dividend schedule data. Currently showing estimated monthly distribution.")
             
-            # Estimate monthly dividends (divide annual by 12, assuming quarterly payments)
-            monthly_data = []
-            for idx, row in chart_df.iterrows():
-                annual_div = row.get('Dividend_Income', 0)
-                if annual_div > 0:
-                    # Assume quarterly payments (simplified)
-                    quarterly = annual_div / 4
-                    for month in [3, 6, 9, 12]:  # Typical dividend months
+            # Get all dividends for current year
+            current_year = datetime.now().year
+            all_dividends_df = get_all_dividends()
+            
+            if not all_dividends_df.empty:
+                # Filter for current year
+                all_dividends_df['dividend_date'] = pd.to_datetime(all_dividends_df['dividend_date'])
+                current_year_dividends = all_dividends_df[all_dividends_df['dividend_date'].dt.year == current_year].copy()
+                
+                if not current_year_dividends.empty:
+                    # Get shares for each ticker
+                    shares_map = dict(zip(portfolio_df['Ticker'], portfolio_df['Shares']))
+                    
+                    # Calculate total dividend per month (considering shares)
+                    monthly_data = []
+                    for _, div_row in current_year_dividends.iterrows():
+                        ticker = div_row['ticker']
+                        shares = shares_map.get(ticker, 0)
+                        dividend_per_share = div_row['dividend_amount']
+                        div_currency = div_row['currency']
+                        
+                        # Convert to base currency
+                        rate = currency_rates.get(f"{div_currency}/{base_currency}", 1.0)
+                        total_dividend = shares * dividend_per_share * rate
+                        
+                        month = div_row['dividend_date'].month
                         monthly_data.append({
                             'Month': month,
-                            'Ticker': row['Ticker'],
-                            'Dividend': quarterly
+                            'Ticker': ticker,
+                            'Dividend': total_dividend,
+                            'Date': div_row['dividend_date'].strftime('%Y-%m-%d')
                         })
-            
-            if monthly_data:
-                monthly_df = pd.DataFrame(monthly_data)
-                monthly_totals = monthly_df.groupby('Month')['Dividend'].sum().reset_index()
-                monthly_totals['Month_Name'] = monthly_totals['Month'].map({
-                    1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
-                    7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'
-                })
-                
-                fig_bar = px.bar(
-                    monthly_totals,
-                    x='Month_Name',
-                    y='Dividend',
-                    title='Estimated Monthly Dividend Income',
-                    labels={'Dividend': f'Dividend ({base_currency})', 'Month_Name': 'Month'}
-                )
-                st.plotly_chart(fig_bar, use_container_width=True)
+                    
+                    if monthly_data:
+                        monthly_df = pd.DataFrame(monthly_data)
+                        monthly_totals = monthly_df.groupby('Month')['Dividend'].sum().reset_index()
+                        monthly_totals['Month_Name'] = monthly_totals['Month'].map({
+                            1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
+                            7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'
+                        })
+                        
+                        fig_bar = px.bar(
+                            monthly_totals,
+                            x='Month_Name',
+                            y='Dividend',
+                            title=f'Faktiska Utdelningar per Månad {current_year}',
+                            labels={'Dividend': f'Utdelning ({base_currency})', 'Month_Name': 'Månad'},
+                            color='Dividend',
+                            color_continuous_scale='Greens'
+                        )
+                        st.plotly_chart(fig_bar, use_container_width=True)
+                        
+                        # Show detailed table
+                        with st.expander("📋 Detaljerad Utdelningslista"):
+                            display_monthly = monthly_df.copy()
+                            display_monthly = display_monthly.sort_values(['Month', 'Ticker'])
+                            display_monthly.columns = ['Månad', 'Ticker', 'Utdelning', 'Datum']
+                            display_monthly['Månad'] = display_monthly['Månad'].map({
+                                1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
+                                7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'
+                            })
+                            st.dataframe(display_monthly, use_container_width=True, hide_index=True)
+                    else:
+                        st.info(f"Inga utdelningar registrerade för {current_year}")
+                else:
+                    st.info(f"Inga utdelningar registrerade för {current_year}. Lägg till utdelningar med datum i '✏️ Redigera Priser & Utdelningar'.")
+            else:
+                st.info("Inga utdelningar registrerade. Lägg till utdelningar med datum i '✏️ Redigera Priser & Utdelningar'.")
         
         with tab5:
             col1, col2 = st.columns(2)
@@ -517,7 +708,7 @@ def display_all_visualizations(portfolio_data, portfolio_df, base_currency, curr
 
 
 def display_transaction_history():
-    """Display transaction history"""
+    """Display transaction history with option to delete individual transactions"""
     
     st.subheader("📜 Transaction History")
     
@@ -537,6 +728,48 @@ def display_transaction_history():
     available_columns = [col for col in display_columns if col in display_df.columns]
     
     st.dataframe(display_df[available_columns], use_container_width=True, hide_index=True)
+    
+    # Add option to delete individual transactions
+    st.markdown("---")
+    with st.expander("🗑️ Ta bort transaktion", expanded=False):
+        st.markdown("**Varning:** Detta tar bort transaktionen och uppdaterar innehavet automatiskt.")
+        
+        if not transactions_df.empty:
+            # Create a readable list of transactions
+            transaction_options = []
+            for idx, row in transactions_df.iterrows():
+                trans_id = row.get('id', '')
+                ticker = row.get('ticker', '')
+                date = row.get('purchase_date', '')
+                qty = row.get('quantity', 0)
+                price = row.get('purchase_price', 0)
+                transaction_options.append(f"ID {trans_id}: {ticker} - {qty} @ {price} ({date})")
+            
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_transaction = st.selectbox(
+                    "Välj transaktion att ta bort",
+                    transaction_options,
+                    key="delete_transaction_select",
+                    label_visibility="collapsed"
+                )
+            
+            with col2:
+                if st.button("🗑️ Ta bort", use_container_width=True, type="secondary", key="delete_transaction_button"):
+                    # Extract transaction ID from selection
+                    trans_id = int(selected_transaction.split("ID ")[1].split(":")[0])
+                    
+                    if st.session_state.get(f'confirm_delete_trans_{trans_id}', False):
+                        try:
+                            delete_transaction(trans_id)
+                            st.success(f"✅ Transaktion {trans_id} har tagits bort!")
+                            st.session_state[f'confirm_delete_trans_{trans_id}'] = False
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Fel vid borttagning: {str(e)}")
+                    else:
+                        st.session_state[f'confirm_delete_trans_{trans_id}'] = True
+                        st.warning(f"Klicka igen för att bekräfta borttagning av transaktion {trans_id}")
 
 
 def show_add_transaction_page():
@@ -661,6 +894,197 @@ def show_settings_page():
                 file_name=f"transactions_export_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
+
+
+def show_edit_prices_page():
+    """Display page for manually editing prices and dividend data"""
+    
+    st.title("✏️ Redigera Priser & Utdelningar")
+    st.markdown("---")
+    st.markdown("**Ange aktuella priser och utdelningar manuellt. Dessa värden används istället för automatisk hämtning från Yahoo Finance.**")
+    
+    # Get current holdings
+    holdings_df = get_all_holdings()
+    
+    if holdings_df.empty:
+        st.info("Inga innehav att redigera. Lägg till transaktioner först.")
+        return
+    
+    # Create tabs for Prices and Dividends
+    tab1, tab2 = st.tabs(["💰 Priser", "📅 Utdelningar med Datum"])
+    
+    with tab1:
+        st.subheader("Manuell Inmatning av Priser")
+        
+        with st.form("edit_prices_form"):
+            price_data = []
+            
+            for idx, row in holdings_df.iterrows():
+                with st.expander(f"**{row['ticker']}**", expanded=False):
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        current_price = row.get('current_price', 0) or 0
+                        new_price = st.number_input(
+                            f"Aktuellt Pris ({row.get('currency', 'USD')})",
+                            min_value=0.0,
+                            value=float(current_price) if current_price else 0.0,
+                            step=0.01,
+                            format="%.2f",
+                            key=f"price_{row['ticker']}",
+                            help="Lämna tomt (0) för att använda automatisk hämtning från Yahoo Finance"
+                        )
+                    
+                    with col2:
+                        # Show calculated annual dividend from dividend records
+                        annual_from_dividends = calculate_annual_dividend_from_dividends(row['ticker'])
+                        annual_dividend = row.get('annual_dividend', 0) or 0
+                        
+                        if annual_from_dividends > 0:
+                            st.info(f"📊 Beräknad årlig utdelning från utdelningsregister: **{annual_from_dividends:.2f} {row.get('currency', 'USD')}**")
+                        
+                        new_dividend = st.number_input(
+                            f"Årlig Utdelning (Fallback) ({row.get('currency', 'USD')})",
+                            min_value=0.0,
+                            value=float(annual_dividend) if annual_dividend else 0.0,
+                            step=0.01,
+                            format="%.2f",
+                            key=f"dividend_{row['ticker']}",
+                            help="Används endast om inga utdelningar med datum är registrerade"
+                        )
+                    
+                    price_data.append({
+                        'ticker': row['ticker'],
+                        'current_price': new_price if new_price > 0 else None,
+                        'annual_dividend': new_dividend if new_dividend > 0 else None
+                    })
+            
+            submitted = st.form_submit_button("💾 Spara Priser", use_container_width=True)
+            
+            if submitted:
+                try:
+                    for item in price_data:
+                        update_holding_price_data(
+                            item['ticker'],
+                            item['current_price'],
+                            item['annual_dividend']
+                        )
+                    
+                    # Clear cache to ensure new prices are loaded
+                    fetch_stock_data.clear()
+                    
+                    st.success("✅ Priser uppdaterade!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"❌ Fel vid sparning: {str(e)}")
+                    st.exception(e)
+        
+        st.markdown("---")
+        st.info("💡 **Tips:** Om du lämnar pris som 0, kommer appen att försöka hämta data automatiskt från Yahoo Finance.")
+    
+    with tab2:
+        st.subheader("Hantera Utdelningar med Datum")
+        st.markdown("**Lägg till flera utdelningar per år med specifika datum. Appen beräknar automatiskt total årlig utdelning.**")
+        
+        # Select ticker
+        ticker_options = [f"{row['ticker']} ({row.get('currency', 'USD')})" for _, row in holdings_df.iterrows()]
+        selected_ticker_str = st.selectbox(
+            "Välj Ticker",
+            ticker_options,
+            key="dividend_ticker_select"
+        )
+        
+        if selected_ticker_str:
+            selected_ticker = selected_ticker_str.split(" (")[0]
+            selected_currency = holdings_df[holdings_df['ticker'] == selected_ticker].iloc[0].get('currency', 'USD')
+            
+            # Show existing dividends
+            st.markdown("### 📋 Befintliga Utdelningar")
+            dividends_df = get_dividends_for_ticker(selected_ticker)
+            
+            if not dividends_df.empty:
+                # Format for display
+                display_dividends = dividends_df[['dividend_date', 'dividend_amount', 'currency']].copy()
+                display_dividends.columns = ['Datum', 'Belopp per Aktie', 'Valuta']
+                display_dividends['Årlig Totalt'] = display_dividends['Belopp per Aktie'].sum()
+                
+                st.dataframe(display_dividends, use_container_width=True, hide_index=True)
+                
+                # Calculate annual total
+                current_year = datetime.now().year
+                year_total = calculate_annual_dividend_from_dividends(selected_ticker, current_year)
+                st.success(f"📊 **Total utdelning {current_year}: {year_total:.2f} {selected_currency} per aktie**")
+                
+                # Delete dividend option
+                st.markdown("#### 🗑️ Ta bort utdelning")
+                dividend_options = [
+                    f"ID {row['id']}: {row['dividend_date']} - {row['dividend_amount']:.2f} {row['currency']}"
+                    for _, row in dividends_df.iterrows()
+                ]
+                
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    selected_dividend = st.selectbox(
+                        "Välj utdelning att ta bort",
+                        dividend_options,
+                        key="delete_dividend_select"
+                    )
+                
+                with col2:
+                    if st.button("🗑️ Ta bort", use_container_width=True, key="delete_dividend_button"):
+                        dividend_id = int(selected_dividend.split("ID ")[1].split(":")[0])
+                        try:
+                            delete_dividend(dividend_id)
+                            st.success("✅ Utdelning borttagen!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Fel: {str(e)}")
+            else:
+                st.info("Inga utdelningar registrerade för denna ticker.")
+            
+            st.markdown("---")
+            
+            # Add new dividend
+            st.markdown("### ➕ Lägg till Ny Utdelning")
+            
+            with st.form("add_dividend_form"):
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    dividend_date = st.date_input(
+                        "Utdelningsdatum *",
+                        value=date.today(),
+                        key="dividend_date_input"
+                    )
+                
+                with col2:
+                    dividend_amount = st.number_input(
+                        f"Utdelning per Aktie ({selected_currency}) *",
+                        min_value=0.0,
+                        step=0.01,
+                        format="%.2f",
+                        key="dividend_amount_input",
+                        help="Utdelning per aktie, inte total utdelning"
+                    )
+                
+                submitted = st.form_submit_button("💾 Lägg till Utdelning", use_container_width=True)
+                
+                if submitted:
+                    if dividend_amount <= 0:
+                        st.error("Utdelning måste vara större än 0")
+                    else:
+                        try:
+                            add_dividend(
+                                ticker=selected_ticker,
+                                dividend_date=dividend_date,
+                                dividend_amount=dividend_amount,
+                                currency=selected_currency
+                            )
+                            st.success(f"✅ Utdelning tillagd: {dividend_amount:.2f} {selected_currency} per aktie den {dividend_date}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"❌ Fel vid tillägg: {str(e)}")
+                            st.exception(e)
 
 
 if __name__ == "__main__":

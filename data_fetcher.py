@@ -46,13 +46,15 @@ def normalize_ticker(ticker):
     return ticker
 
 
-@st.cache_data(ttl=300)  # Cache for 5 minutes
-def fetch_stock_data(portfolio_df):
+@st.cache_data(ttl=60)  # Cache for 1 minute (shorter to allow manual updates)
+def fetch_stock_data(portfolio_df, use_manual_prices=True):
     """
     Fetch current stock data for all tickers in the portfolio.
+    Uses manually entered prices if available, otherwise fetches from yfinance.
     
     Args:
         portfolio_df: DataFrame with 'Ticker' column
+        use_manual_prices: If True, use manually entered prices from database
         
     Returns:
         DataFrame with stock data including current price, dividend info, etc.
@@ -60,18 +62,146 @@ def fetch_stock_data(portfolio_df):
     if portfolio_df is None or portfolio_df.empty:
         return None
     
+    # Get manually entered prices if available
+    manual_prices = {}
+    if use_manual_prices:
+        try:
+            from database import get_manual_price_data, calculate_annual_dividend_from_dividends
+            manual_df = get_manual_price_data()
+            for _, row in manual_df.iterrows():
+                ticker = str(row['ticker']).upper()  # Normalize to uppercase
+                current_price = row.get('current_price', 0)
+                
+                # Calculate annual dividend from dividend records first
+                annual_from_dividends = calculate_annual_dividend_from_dividends(ticker)
+                
+                # Use dividend records if available, otherwise use manual annual_dividend
+                annual_dividend = annual_from_dividends if annual_from_dividends > 0 else row.get('annual_dividend', 0)
+                
+                if pd.notna(current_price) and float(current_price) > 0:
+                    manual_prices[ticker] = {
+                        'current_price': float(current_price),
+                        'annual_dividend': float(annual_dividend) if pd.notna(annual_dividend) and float(annual_dividend) > 0 else None,
+                        'source': 'manual'
+                    }
+        except Exception as e:
+            print(f"Error loading manual prices: {str(e)}")
+    
+    # Get user's currency for each ticker from portfolio_df
+    user_currency_map = {}
+    if 'Currency' in portfolio_df.columns:
+        for _, row in portfolio_df.iterrows():
+            user_currency_map[str(row['Ticker']).upper()] = row['Currency']
+    
     tickers = portfolio_df['Ticker'].unique().tolist()
     stock_data = []
     
     for ticker in tickers:
+        # Check if manual price exists (normalize ticker for comparison)
+        ticker_upper = str(ticker).upper()
+        if ticker_upper in manual_prices:
+            manual_data = manual_prices[ticker_upper]
+            # Get user's currency for this ticker
+            user_currency = user_currency_map.get(ticker_upper, 'USD')
+            
+            try:
+                # Still get other info from yfinance (company name, etc.)
+                normalized_ticker = normalize_ticker(ticker)
+                stock = yf.Ticker(normalized_ticker)
+                info = stock.info
+                
+                stock_data.append({
+                    'Ticker': ticker,
+                    'Company_Name': info.get('longName') or info.get('shortName') or ticker,
+                    'Current_Price': manual_data['current_price'],
+                    'Price_Source': 'manual',
+                    'Annual_Dividend': manual_data['annual_dividend'] or 0,
+                    'Dividend_Yield_Info': 0,
+                    'Week_52_High': info.get('fiftyTwoWeekHigh', 0) or 0,
+                    'Week_52_Low': info.get('fiftyTwoWeekLow', 0) or 0,
+                    'Market_Cap': info.get('marketCap', 0) or 0,
+                    'Payout_Ratio': info.get('payoutRatio', 0) or 0,
+                    'Currency': user_currency  # Use user's currency, not yfinance currency
+                })
+                continue  # Skip yfinance price fetching
+            except Exception as e:
+                # If yfinance fails, use manual data only
+                stock_data.append({
+                    'Ticker': ticker,
+                    'Company_Name': ticker,
+                    'Current_Price': manual_data['current_price'],
+                    'Price_Source': 'manual',
+                    'Annual_Dividend': manual_data['annual_dividend'] or 0,
+                    'Dividend_Yield_Info': 0,
+                    'Week_52_High': 0,
+                    'Week_52_Low': 0,
+                    'Market_Cap': 0,
+                    'Payout_Ratio': 0,
+                    'Currency': user_currency  # Use user's currency
+                })
+                continue
+        
+        # If no manual price, fetch from yfinance
         try:
             # Normalize ticker for yfinance (handle .ST, .OL, etc.)
             normalized_ticker = normalize_ticker(ticker)
             stock = yf.Ticker(normalized_ticker)
             info = stock.info
             
-            # Get current price
-            current_price = info.get('currentPrice') or info.get('regularMarketPrice') or 0
+            # Get current price - try multiple methods for better reliability
+            current_price = 0
+            price_source = "none"
+            
+            # Method 1: Try info dictionary (most reliable)
+            current_price = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose') or 0
+            if current_price > 0:
+                price_source = "yfinance_info"
+            
+            # Method 2: Try fast_info (faster, less data but sometimes more reliable)
+            if current_price == 0:
+                try:
+                    fast_info = stock.fast_info
+                    if fast_info:
+                        fast_price = fast_info.get('lastPrice') or fast_info.get('regularMarketPrice')
+                        if fast_price and fast_price > 0:
+                            current_price = float(fast_price)
+                            price_source = "yfinance_fast_info"
+                except:
+                    pass
+            
+            # Method 3: If info doesn't have price, try getting from history (1 minute)
+            if current_price == 0:
+                try:
+                    hist = stock.history(period="1d", interval="1m")
+                    if not hist.empty:
+                        current_price = float(hist['Close'].iloc[-1])
+                        price_source = "yfinance_history_1m"
+                except:
+                    pass
+            
+            # Method 4: Try last close price from daily history (5 days)
+            if current_price == 0:
+                try:
+                    hist = stock.history(period="5d")
+                    if not hist.empty:
+                        current_price = float(hist['Close'].iloc[-1])
+                        price_source = "yfinance_history_5d"
+                except:
+                    pass
+            
+            # Method 5: Try backup sources if yfinance failed
+            if current_price == 0:
+                try:
+                    from data_fetcher_backup import fetch_price_with_fallback
+                    backup_price = fetch_price_with_fallback(ticker, 0)
+                    if backup_price and backup_price > 0:
+                        current_price = backup_price
+                        price_source = "backup_source"
+                except ImportError:
+                    # Backup module not available, skip
+                    pass
+                except Exception as e:
+                    print(f"Backup source error for {ticker}: {str(e)}")
             
             # Get dividend information
             dividend_rate = info.get('dividendRate', 0) or 0
@@ -94,17 +224,21 @@ def fetch_stock_data(portfolio_df):
             # Get payout ratio
             payout_ratio = info.get('payoutRatio', 0) or 0
             
+            # Get currency from yfinance, but we'll override with user's currency later
+            yf_currency = info.get('currency', 'USD')
+            
             stock_data.append({
                 'Ticker': ticker,
                 'Company_Name': company_name,
                 'Current_Price': current_price,
+                'Price_Source': price_source,  # Track which source provided the price
                 'Annual_Dividend': annual_dividend,
                 'Dividend_Yield_Info': dividend_yield * 100 if dividend_yield else 0,
                 'Week_52_High': week_52_high,
                 'Week_52_Low': week_52_low,
                 'Market_Cap': market_cap,
                 'Payout_Ratio': payout_ratio,
-                'Currency': info.get('currency', 'USD')
+                'Currency': yf_currency  # This will be overridden by user's currency from database
             })
             
         except Exception as e:

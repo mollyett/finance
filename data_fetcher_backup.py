@@ -199,3 +199,4 @@ def fetch_price_multiple_methods_yfinance(ticker):
     
     return 0
 
+

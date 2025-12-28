@@ -247,11 +247,13 @@ def fetch_stock_data(portfolio_df, use_manual_prices=True):
                 'Ticker': ticker,
                 'Company_Name': ticker,
                 'Current_Price': 0,
+                'Price_Source': 'failed',
                 'Annual_Dividend': 0,
                 'Dividend_Yield_Info': 0,
                 'Week_52_High': 0,
                 'Week_52_Low': 0,
                 'Market_Cap': 0,
+                'Payout_Ratio': 0,
                 'Currency': 'USD'
             })
             print(f"Error fetching data for {ticker}: {str(e)}")

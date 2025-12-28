@@ -122,3 +122,4 @@ def format_percentage(value, decimals=2):
 
 
 
+

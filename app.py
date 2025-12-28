@@ -144,8 +144,13 @@ def show_overview_page(base_currency):
         return
     
     # Check if prices were fetched successfully
-    missing_prices = portfolio_data[portfolio_data['Current_Price'] == 0]['Ticker'].tolist()
-    manual_prices_used = portfolio_data[portfolio_data.get('Price_Source', '') == 'manual']['Ticker'].tolist()
+    missing_prices = []
+    if 'Current_Price' in portfolio_data.columns:
+        missing_prices = portfolio_data[portfolio_data['Current_Price'] == 0]['Ticker'].tolist()
+    
+    manual_prices_used = []
+    if 'Price_Source' in portfolio_data.columns:
+        manual_prices_used = portfolio_data[portfolio_data['Price_Source'] == 'manual']['Ticker'].tolist()
     
     if manual_prices_used:
         st.success(f"✅ Använder manuellt angivna priser för: {', '.join(manual_prices_used)}")
@@ -155,8 +160,9 @@ def show_overview_page(base_currency):
             st.write("**Kurser som saknas:**")
             for ticker in missing_prices:
                 ticker_data = portfolio_data[portfolio_data['Ticker'] == ticker].iloc[0]
-                st.write(f"- **{ticker}**: Current_Price = {ticker_data.get('Current_Price', 'N/A')}, "
-                        f"Price_Source = {ticker_data.get('Price_Source', 'N/A')}")
+                current_price = ticker_data.get('Current_Price', 'N/A') if 'Current_Price' in ticker_data.index else 'N/A'
+                price_source = ticker_data.get('Price_Source', 'N/A') if 'Price_Source' in ticker_data.index else 'N/A'
+                st.write(f"- **{ticker}**: Current_Price = {current_price}, Price_Source = {price_source}")
             st.warning(f"⚠️ Aktiekurser kunde inte hämtas för: {', '.join(missing_prices)}. "
                       f"Gå till '✏️ Edit Prices' för att ange priser manuellt.")
     
@@ -804,6 +810,9 @@ def show_add_transaction_page():
                 st.error("Please fill in all required fields (marked with *)")
             else:
                 try:
+                    # Ensure database is initialized
+                    init_database()
+                    
                     transaction_id = add_transaction(
                         ticker=ticker.upper(),
                         purchase_date=purchase_date,
@@ -817,8 +826,10 @@ def show_add_transaction_page():
                     )
                     st.success(f"✅ Transaction added successfully! (ID: {transaction_id})")
                     st.balloons()
+                    st.rerun()  # Refresh to show new transaction
                 except Exception as e:
                     st.error(f"❌ Error adding transaction: {str(e)}")
+                    st.exception(e)  # Show full traceback for debugging
 
 
 def show_settings_page():

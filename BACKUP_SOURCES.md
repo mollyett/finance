@@ -76,3 +76,4 @@ Om kurser fortfarande saknas:
 2. Testa tickern direkt på Yahoo Finance
 3. Kontrollera om API-nycklar är korrekt konfigurerade (om du använder backup-källor)
 
+

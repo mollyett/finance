@@ -75,8 +75,7 @@ def init_database():
             dividend_date DATE NOT NULL,
             dividend_amount REAL NOT NULL,
             currency TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (ticker) REFERENCES holdings(ticker)
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
